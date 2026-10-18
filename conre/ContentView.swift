@@ -1,24 +1,10 @@
-//
-//  ContentView.swift
-//  conre
-//
-//  Created by Phoevos Maniski on 2026/10/18.
-//
-
 import SwiftUI
 
 struct ContentView: View {
-    var body: some View {
-        VStack {
-            Image(systemName: "globe")
-                .imageScale(.large)
-                .foregroundStyle(.tint)
-            Text("Hello, worldasdfdsafsd!")
-        }
-        .padding()
-    }
-}
+    let memory: WorkingMemoryStore
+    let observer: ActivityObserver
 
-#Preview {
-    ContentView()
+    var body: some View {
+        TimelineView(memory: memory, observer: observer)
+    }
 }

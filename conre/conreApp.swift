@@ -1,17 +1,14 @@
-//
-//  conreApp.swift
-//  conre
-//
-//  Created by Phoevos Maniski on 2026/10/18.
-//
-
 import SwiftUI
 
 @main
 struct conreApp: App {
+    @State private var memory = WorkingMemoryStore()
+    @State private var observer = ActivityObserver()
+
     var body: some Scene {
-        WindowGroup {
-            ContentView()
+        WindowGroup("Conre") {
+            ContentView(memory: memory, observer: observer)
         }
+        .defaultSize(width: 420, height: 590)
     }
 }
