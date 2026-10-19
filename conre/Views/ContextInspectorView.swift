@@ -6,80 +6,44 @@ struct ContextInspectorView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text("Detailed context").font(.title2.bold())
+                Text("Captured context").font(.title2.bold())
                 Spacer()
+                Button("Manage apps") { observer.navigateToApps = true; dismiss() }
                 Button("Done") { dismiss() }
             }
-            Text("Accessibility text is tried first. Optional window-only visual fallback uses a temporary image and on-device OCR when no text is available. Images are not saved; extracted text stays local. No audio, AI, or uploads. Visual capture may include sensitive information and cannot reliably exclude individual fields.")
-                .font(.caption).foregroundStyle(.secondary)
-            ScrollView {
-                VStack(alignment: .leading) {
-                    ForEach(orderedApps, id: \.self) { id in
-                        VStack(alignment: .leading, spacing: 6) {
-                            Toggle(appName(id), isOn: Binding(get: { observer.detailedIDs.contains(id) },
-                                                             set: { observer.enableDetailedContext(id, enabled: $0) }))
-                            if observer.detailedIDs.contains(id) {
-                                if observer.contextFailures.contains(id) || observer.settingsAppID == id {
-                                    Label("No usable context gathered", systemImage: "exclamationmark.triangle.fill")
-                                        .font(.caption).foregroundStyle(.red)
-                                }
-                                Toggle("Window-only visual fallback", isOn: Binding(get: { observer.visualIDs.contains(id) },
-                                                                                   set: { observer.enableVisualFallback(id, enabled: $0) }))
-                                    .font(.caption)
-                                if observer.visualIDs.contains(id) {
-                                    Text("Only this app's focused window, when Accessibility returns no text. Switch back to the app after enabling.")
-                                        .font(.caption2).foregroundStyle(.secondary)
-                                }
-                            }
-                        }.padding(.vertical, 4)
-                    }
-                    if observer.approvedIDs.isEmpty { Text("Approve apps in App awareness first.").foregroundStyle(.secondary) }
+            CaptureHealthView(observer: observer)
+            if let id = observer.settingsAppID, observer.contextFailures.contains(id), observer.captureMode(for: id) == .text {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Text access isn't providing context for \(appName(id)).").font(.subheadline)
+                    Text("Optional fallback reads only its focused window with local OCR. Temporary images are discarded; extracted text stays local and may contain sensitive information.").font(.caption).foregroundStyle(.secondary)
+                    Button("Enable window-only visual fallback") { observer.setCaptureMode(id, mode: .visual) }
                 }
-            }.frame(maxHeight: 200)
-            if !observer.visualIDs.isEmpty && !observer.visualPermissionGranted {
-                Button("Allow Screen Recording for window-only capture…", action: observer.requestVisualPermission)
-                Text("macOS grants screen-recording access broadly; Conre restricts capture to the approved foreground window. Enable Conre in Privacy & Security → Screen Recording if prompted. A relaunch may be required.")
-                    .font(.caption).foregroundStyle(.secondary)
             }
-            Text(observer.contextStatus).font(.caption)
-            Text("Checks adapt from 12 to 60 seconds when content stays similar. Accessibility coverage varies; this is evidence of exposed content, not a record of confirmed actions.")
-                .font(.caption).foregroundStyle(.secondary)
+            PermissionControls(observer: observer)
             HStack {
                 Text("Saved captures · \(observer.context.snapshots.count)").font(.headline)
                 Spacer()
                 Button("Delete context", role: .destructive, action: observer.clearContext)
             }
-            Text("\(observer.context.consolidatedSamples) repeated samples consolidated this run. Similar OCR views keep the latest wording; small OCR-only changes may not become separate events.")
-                .font(.caption).foregroundStyle(.secondary)
+            Text("Partial observations, not confirmed actions. OCR can misread code and text. Images are not saved or uploaded.").font(.caption).foregroundStyle(.secondary)
             if let warning = observer.context.warning { Text(warning).font(.caption).foregroundStyle(.orange) }
-            List(observer.context.snapshots.reversed()) { snapshot in
+            List(observer.context.snapshots.sorted { $0.latestDate > $1.latestDate }) { snapshot in
                 DisclosureGroup {
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("Source: \(snapshot.source == "windowOCR" ? "Window-only OCR" : "Accessibility") · \(snapshot.status)").font(.caption).foregroundStyle(.secondary)
-                        Text(snapshot.text.isEmpty ? "No text captured." : snapshot.text)
+                        Text(snapshot.text.isEmpty ? "No usable text in this attempt." : snapshot.text)
                             .font(.system(.caption, design: .monospaced))
+                        DisclosureGroup("Technical diagnostics") { Text(snapshot.status).font(.caption2).foregroundStyle(.secondary) }
                     }.textSelection(.enabled)
                 } label: {
-                    VStack(alignment: .leading, spacing: 3) {
+                    VStack(alignment: .leading, spacing: 4) {
                         Text(snapshot.windowTitle ?? snapshot.applicationName).font(.headline)
-                        Text("\(snapshot.applicationName) · \(snapshot.status)").font(.caption).lineLimit(2)
-                        Text(snapshot.timestamp, format: .dateTime.month().day().hour().minute().second())
-                            .font(.caption).foregroundStyle(.secondary)
-                        if let last = snapshot.lastSeenAt {
-                            Text("Last seen \(last.formatted(date: .omitted, time: .standard)) · \(snapshot.sampleCount ?? 1) samples")
-                                .font(.caption2).foregroundStyle(.secondary)
-                        }
+                        Text("\(snapshot.applicationName) · \(snapshot.health.rawValue) · \(snapshot.source == "windowOCR" ? "Window OCR" : "Text access")").font(.caption)
+                        Text(snapshot.latestDate, format: .dateTime.month().day().hour().minute().second()).font(.caption2).foregroundStyle(.secondary)
+                        if (snapshot.sampleCount ?? 1) > 1 { Text("\(snapshot.sampleCount ?? 1) similar samples combined").font(.caption2).foregroundStyle(.secondary) }
                     }
                 }
             }
         }.padding(20).frame(minWidth: 600, minHeight: 620)
     }
-    private var orderedApps: [String] {
-        let ids = observer.approvedIDs.sorted()
-        guard let selected = observer.settingsAppID, ids.contains(selected) else { return ids }
-        return [selected] + ids.filter { $0 != selected }
-    }
-    private func appName(_ id: String) -> String {
-        observer.log.events.last(where: { $0.bundleID == id })?.applicationName ?? id
-    }
+    private func appName(_ id: String) -> String { observer.log.events.last(where: { $0.bundleID == id })?.applicationName ?? id }
 }

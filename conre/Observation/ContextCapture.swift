@@ -69,10 +69,17 @@ enum ContextCapture {
                 children: { attribute($0, "AXChildren") as? [AXUIElement] ?? [] },
                 equal: { CFEqual($0, $1) },
                 canContinue: { Date() < deadline && !Task.isCancelled })
+        } else if ["com.apple.dt.Xcode", "com.microsoft.VSCode", "com.microsoft.VSCodeInsiders", "com.todesktop.230313mzl4w4u92"].contains(bundleID) || bundleID.hasPrefix("com.jetbrains.") {
+            root = PageContentSearch.editorRegion(window: window, focused: focused,
+                role: { attribute($0, "AXRole") as? String ?? "" },
+                label: { attribute($0, "AXDescription") as? String ?? attribute($0, "AXTitle") as? String ?? "" },
+                parent: { element(attribute($0, "AXParent")) },
+                children: { attribute($0, "AXChildren") as? [AXUIElement] ?? [] },
+                equal: { CFEqual($0, $1) }, canContinue: { Date() < deadline && !Task.isCancelled })
         } else { root = window }
         deadline = Date().addingTimeInterval(2)
         var stack: [(AXUIElement, Int)] = [(root, 0)]
-        if !browser, let focused { stack.append((focused, 0)) }
+        if !browser, CFEqual(root, window), let focused { stack.append((focused, 0)) }
         var visited: [AXUIElement] = []
         var snippets: [String] = []
         var contentSnippets: [String] = []
@@ -124,7 +131,7 @@ enum ContextCapture {
                 let text = String(value.trimmingCharacters(in: .whitespacesAndNewlines).prefix(min(2000, 6000 - length)))
                 if !text.isEmpty, seenText.insert(text).inserted {
                     snippets.append(text); length += text.count
-                    if ["AXStaticText", "AXHeading", "AXTextArea"].contains(role) { contentSnippets.append(text) }
+                    if ["AXStaticText", "AXHeading", "AXTextArea", "AXLink"].contains(role) { contentSnippets.append(text) }
                 }
             }
             guard role != "AXTextArea", role != "AXButton" else { continue }

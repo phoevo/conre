@@ -13,7 +13,7 @@ enum CaptureEvidence {
             return ("", "No body text captured · \(nodeCount) elements inspected\(bounded ? " · Limit reached" : "")")
         }
         var seen = Set<String>()
-        let text = (useful + interface).filter { seen.insert($0).inserted }.joined(separator: "\n")
+        let text = useful.filter { seen.insert($0).inserted }.joined(separator: "\n")
         return (String(text.prefix(6000)), bounded ? "Partial body text · Limit reached" : browser ? "Page body text captured" : "Exposed body text captured")
     }
 }

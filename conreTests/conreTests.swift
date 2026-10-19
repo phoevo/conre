@@ -458,3 +458,80 @@ struct ContextEfficiencyTests {
         #expect(!VisualWindowCapture.similarImage([], []))
     }
 }
+
+@MainActor
+struct PolishTests {
+    @Test func changesShowOnlyNewEvidenceAndKeepAppBoundaries() {
+        let first = ContextSnapshot(timestamp: Date(timeIntervalSince1970: 1), bundleID: "chat", applicationName: "Chat", windowTitle: "Roles", text: "Student cannot read profiles\nCheck document permissions", status: "captured")
+        let next = ContextSnapshot(timestamp: Date(timeIntervalSince1970: 2), bundleID: "chat", applicationName: "Chat", windowTitle: "Roles", text: "Student cannot read profiles\nTry a student session", status: "captured")
+        let other = ContextSnapshot(timestamp: Date(timeIntervalSince1970: 3), bundleID: "editor", applicationName: "Editor", windowTitle: "Roles", text: next.text, status: "captured")
+        let changes = ContextChange.build([first, next, other])
+        #expect(changes.count == 3)
+        #expect(changes[1].added == ["Try a student session"])
+        #expect(changes[1].removedCount == 1)
+        #expect(changes[0].first)
+        #expect(ContextChange.build([first, first]).count == 1)
+    }
+    @Test func partialTextIsNotFailureAndPermissionIsDistinct() {
+        #expect(CaptureHealth.classify(text: "Some evidence", status: "Partial body text · Limit reached") == .partial)
+        #expect(!CaptureHealth.partial.needsAttention)
+        #expect(CaptureHealth.classify(text: "", status: "Enable Screen Recording permission") == .permission)
+        #expect(CaptureHealth.classify(text: "", status: "No body text captured · AX requests 50") == .unavailable)
+        #expect(CaptureHealth.classify(text: "", status: "Secure field focused · Capture skipped") == .paused)
+    }
+    @Test func bodyEvidenceDoesNotAppendInterfaceLabels() {
+        let result = CaptureEvidence.result(content: ["Permission denied for student"], interface: ["Share", "Copy", "Profile menu"], windowTitle: "Appwrite", bounded: false, browser: true, nodeCount: 20)
+        #expect(result.text == "Permission denied for student")
+    }
+    @Test func OCRSeparatesClearReadingColumnButKeepsAmbiguousLayouts() {
+        let body = (0..<4).map { index in OCRTextLine(text: "This is a long meaningful conversation line number \(index) about student permissions.", bounds: CGRect(x: 0.3, y: 0.8 - Double(index) * 0.1, width: 0.6, height: 0.03), confidence: 0.9) }
+        let sidebar = OCRTextLine(text: "Old unrelated chat", bounds: CGRect(x: 0.01, y: 0.8, width: 0.15, height: 0.03), confidence: 0.9)
+        #expect(OCRContentFilter.select([sidebar] + body).count == 4)
+        #expect(OCRContentFilter.select([sidebar, body[0]]).count == 2)
+    }
+    @Test func editorRootRequiresFocusedEditorToBelongToWindow() {
+        let edges = ["window": ["toolbar", "editor"], "other": ["wrong-editor"]]
+        let found = PageContentSearch.editorRegion(window: "window", focused: "editor", role: { $0.contains("editor") ? "AXTextArea" : "AXGroup" }, label: { _ in "" }, parent: { node in edges.first(where: { $0.value.contains(node) })?.key }, children: { edges[$0] ?? [] }, equal: { $0 == $1 }, canContinue: { true })
+        #expect(found == "editor")
+        let wrong = PageContentSearch.editorRegion(window: "window", focused: "wrong-editor", role: { $0.contains("editor") ? "AXTextArea" : "AXGroup" }, label: { _ in "" }, parent: { node in edges.first(where: { $0.value.contains(node) })?.key }, children: { edges[$0] ?? [] }, equal: { $0 == $1 }, canContinue: { true })
+        #expect(wrong == "window")
+    }
+    @Test func modeSelectionPreservesExplicitVisualConsent() throws {
+        let suite = "ConrePolish-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let root = FileManager.default.temporaryDirectory.appending(path: suite)
+        let observer = ActivityObserver(defaults: defaults, log: RawObservationLog(url: root.appending(path: "raw.json")), context: ContextStore(url: root.appending(path: "context.json")))
+        observer.setCaptureMode("test.editor", mode: .text)
+        #expect(observer.captureMode(for: "test.editor") == .text)
+        #expect(!observer.mayCaptureVisual("test.editor"))
+        observer.setCaptureMode("test.editor", mode: .visual)
+        #expect(observer.mayCaptureVisual("test.editor"))
+        observer.setCaptureMode("test.editor", mode: .activity)
+        #expect(!observer.detailedIDs.contains("test.editor"))
+        #expect(!observer.visualIDs.contains("test.editor"))
+        observer.setCaptureMode("test.editor", mode: .off)
+        #expect(!observer.mayObserve("test.editor"))
+    }
+    @Test func metricsCountActualWritesAndCompletedWork() {
+        let metrics = CapturePerformance()
+        metrics.capture(seconds: 0.2, ocr: true, reused: false)
+        metrics.capture(seconds: 0.1, ocr: false, reused: true)
+        metrics.write(bytes: 512)
+        #expect(metrics.attempts == 2)
+        #expect(metrics.ocrRuns == 1)
+        #expect(metrics.reusedOCR == 1)
+        #expect(metrics.diskWrites == 1)
+        #expect(metrics.writtenBytes == 512)
+    }
+    @Test func benchmarkChangeProjection() throws {
+        let snapshots = (0..<200).map { index in ContextSnapshot(timestamp: Date(timeIntervalSince1970: Double(index)), bundleID: "editor", applicationName: "Editor", windowTitle: "permissions.swift", text: (0..<50).map { "Line \($0): student permission context" }.joined(separator: "\n") + "\nRevision \(index)", status: "captured", source: "accessibility") }
+        let start = ProcessInfo.processInfo.systemUptime
+        var count = 0
+        for _ in 0..<10 { count = ContextChange.build(snapshots).count }
+        let milliseconds = (ProcessInfo.processInfo.systemUptime - start) * 1000 / 10
+        #expect(count == 200)
+        let report: [String: Any] = ["records": 200, "linesPerRecord": 51, "iterations": 10, "averageProjectionMilliseconds": milliseconds]
+        try JSONSerialization.data(withJSONObject: report, options: .prettyPrinted).write(to: URL(fileURLWithPath: "/private/tmp/conre-polish/benchmark.json"))
+    }
+}

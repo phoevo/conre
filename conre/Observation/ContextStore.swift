@@ -19,6 +19,7 @@ final class ContextStore {
     private(set) var snapshots: [ContextSnapshot] = []
     private(set) var warning: String?
     private let url: URL
+    @ObservationIgnored var onWrite: ((Int) -> Void)?
     private var writable = true
     private var lastSavedAt = Date.distantPast
     private(set) var consolidatedSamples = 0
@@ -67,7 +68,9 @@ final class ContextStore {
         guard writable else { return }
         do {
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try JSONEncoder().encode(snapshots).write(to: url, options: .atomic)
+            let data = try JSONEncoder().encode(snapshots)
+            try data.write(to: url, options: .atomic)
+            onWrite?(data.count)
             lastSavedAt = Date()
             warning = nil
         } catch { warning = "Could not save context: \(error.localizedDescription)" }

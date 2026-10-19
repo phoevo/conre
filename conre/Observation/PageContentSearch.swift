@@ -74,3 +74,28 @@ extension PageContentSearch {
         return root
     }
 }
+
+extension PageContentSearch {
+    nonisolated static func editorRegion<Node>(window: Node, focused: Node?, role: (Node) -> String,
+                                              label: (Node) -> String, parent: (Node) -> Node?, children: (Node) -> [Node],
+                                              equal: (Node, Node) -> Bool, canContinue: () -> Bool) -> Node {
+        if var node = focused {
+            var candidate: Node?
+            for _ in 0..<40 {
+                guard canContinue() else { return window }
+                if role(node) == "AXTextArea", candidate == nil { candidate = node }
+                if equal(node, window) { if let candidate { return candidate }; break }
+                guard let next = parent(node) else { break }; node = next
+            }
+        }
+        var queue = [window]; var index = 0
+        while index < queue.count, index < 120, canContinue() {
+            let node = queue[index]; index += 1
+            let kind = role(node)
+            if kind == "AXTextArea", label(node).localizedCaseInsensitiveContains("editor") { return node }
+            if ["AXToolbar", "AXTextField", "AXSecureTextField", "AXMenu"].contains(kind) { continue }
+            queue.append(contentsOf: children(node).prefix(min(40, max(0, 600 - queue.count))))
+        }
+        return window
+    }
+}

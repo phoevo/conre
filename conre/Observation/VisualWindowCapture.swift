@@ -61,7 +61,11 @@ enum VisualWindowCapture {
         request.recognitionLevel = .accurate
         request.usesLanguageCorrection = true
         try VNImageRequestHandler(cgImage: image).perform([request])
-        return String((request.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: "\n").prefix(6000))
+        let lines = (request.results ?? []).compactMap { observation -> OCRTextLine? in
+            guard let candidate = observation.topCandidates(1).first else { return nil }
+            return OCRTextLine(text: candidate.string, bounds: observation.boundingBox, confidence: candidate.confidence)
+        }
+        return String(OCRContentFilter.select(lines).map(\.text).joined(separator: "\n").prefix(6000))
     }
     nonisolated static func fingerprint(_ image: CGImage) -> [UInt8] {
         var rendered = false

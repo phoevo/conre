@@ -31,13 +31,23 @@ final class ActivityObserver {
     private(set) var isRecording = false
     private(set) var accessibilityGranted = false
     private(set) var intentNote: String
+    let performance = CapturePerformance()
+    private(set) var latestCapture: ContextSnapshot?
+    var navigateToApps = false
+    var captureHealth: CaptureHealth {
+        if isPaused { return .paused }
+        if !detailedIDs.isEmpty && !accessibilityGranted { return .permission }
+        if isRecording, let id = last?.bundleID, !detailedIDs.contains(id) { return .activity }
+        return latestCapture?.health ?? .waiting
+    }
+    var lastUsefulCapture: ContextSnapshot? { context.snapshots.filter { !$0.text.isEmpty }.max { $0.latestDate < $1.latestDate } }
     let context: ContextStore
     var contextSettingsPresented = false
     private(set) var visualIDs: Set<String>
     private(set) var contextFailures: Set<String> = []
     private(set) var visualPermissionGranted = CGPreflightScreenCaptureAccess()
     private(set) var settingsAppID: String?
-    var hasContextWarning: Bool { isRecording && last.map { contextFailures.contains($0.bundleID) } == true }
+    var hasContextWarning: Bool { isRecording && last.map { contextFailures.contains($0.bundleID) } == true && captureHealth.needsAttention }
     private(set) var detailedIDs: Set<String>
     private(set) var contextStatus = "Detailed context is off until enabled per app"
     private var configuredContextApps: [pid_t: String] = [:]
@@ -55,10 +65,10 @@ final class ActivityObserver {
     private var suspended = false
     private var workspaceTokens: [NSObjectProtocol] = []
 
-    var sandboxed: Bool {
+    let sandboxed: Bool = {
         guard let task = SecTaskCreateFromSelf(nil) else { return true }
         return (SecTaskCopyValueForEntitlement(task, "com.apple.security.app-sandbox" as CFString, nil) as? Bool) ?? false
-    }
+    }()
     init(defaults: UserDefaults = .standard, log: RawObservationLog? = nil, context: ContextStore? = nil) {
         self.defaults = defaults
         visualIDs = Set(defaults.stringArray(forKey: "visualFallbackIDs") ?? [])
@@ -68,6 +78,10 @@ final class ActivityObserver {
         self.log = log ?? RawObservationLog()
         approvedIDs = Set(defaults.stringArray(forKey: "approvedApplicationIDs") ?? [])
         isPaused = defaults.bool(forKey: "observationPaused")
+        latestCapture = self.context.snapshots.max { $0.latestDate < $1.latestDate }
+        let metrics = performance
+        self.context.onWrite = { [weak metrics] in metrics?.write(bytes: $0) }
+        self.log.onWrite = { [weak metrics] in metrics?.write(bytes: $0) }
     }
     func start() {
         guard activationToken == nil else { return }
@@ -120,6 +134,22 @@ final class ActivityObserver {
         defaults.set(intentNote, forKey: "currentIntentNote")
         last = nil
         sample()
+    }
+    func captureMode(for id: String) -> AppCaptureMode {
+        guard approvedIDs.contains(id) else { return .off }
+        if visualIDs.contains(id) && detailedIDs.contains(id) { return .visual }
+        return detailedIDs.contains(id) ? .text : .activity
+    }
+    func setCaptureMode(_ id: String, mode: AppCaptureMode) {
+        cancelContext(); log.endSession()
+        approvedIDs.remove(id); detailedIDs.remove(id); visualIDs.remove(id); contextFailures.remove(id)
+        if mode != .off { approvedIDs.insert(id) }
+        if mode == .text || mode == .visual { detailedIDs.insert(id) }
+        if mode == .visual { visualIDs.insert(id) }
+        defaults.set(approvedIDs.sorted(), forKey: "approvedApplicationIDs")
+        defaults.set(detailedIDs.sorted(), forKey: "detailedContextIDs")
+        defaults.set(visualIDs.sorted(), forKey: "visualFallbackIDs")
+        last = nil; sample()
     }
     func mayObserve(_ id: String) -> Bool {
         !isPaused && !suspended && approvedIDs.contains(id) && id != Bundle.main.bundleIdentifier
@@ -203,17 +233,18 @@ final class ActivityObserver {
         contextGeneration = generation
         let pid = app.processIdentifier
         let name = app.localizedName ?? id
+        let startedAt = ProcessInfo.processInfo.systemUptime
         let requestSupport = configuredContextApps[pid] != id
         configuredContextApps[pid] = id
         contextStatus = "Reading exposed text from \(name)…"
         contextTask = Task.detached(priority: .utility) { [weak self] in
             let result = ContextCapture.read(pid: pid, bundleID: id, requestAppSupport: requestSupport)
             guard !Task.isCancelled else { return }
-            await self?.finishContext(result, id: id, name: name, pid: pid, title: title, generation: generation)
+            await self?.finishContext(result, id: id, name: name, pid: pid, title: title, generation: generation, startedAt: startedAt)
         }
     }
     private func finishContext(_ accessibilityResult: (text: String, status: String), id: String, name: String,
-                               pid: pid_t, title: String?, generation: UUID) async {
+                               pid: pid_t, title: String?, generation: UUID, startedAt: TimeInterval) async {
         guard contextGeneration == generation else { return }
         defer { if contextGeneration == generation { contextTask = nil } }
         guard mayCaptureContext(id), !sandboxed, AXIsProcessTrusted(),
@@ -221,6 +252,8 @@ final class ActivityObserver {
               windowMetadata(pid: pid).0 == title else { contextStatus = "Capture discarded · App, window, or permission changed"; return }
         var result = accessibilityResult
         var source = "accessibility"
+        var ranOCR = false
+        var reusedOCR = false
         if result.text.isEmpty, !result.status.hasPrefix("Secure field"), mayCaptureVisual(id) {
             visualPermissionGranted = CGPreflightScreenCaptureAccess()
             if visualPermissionGranted, let target = VisualWindowCapture.target(pid: pid) {
@@ -233,6 +266,8 @@ final class ActivityObserver {
                 }
                 let captured = await withTaskCancellationHandler(operation: { await visual.value }, onCancel: { visual.cancel() })
                 guard contextGeneration == generation else { return }
+                reusedOCR = captured.sample != nil && captured.sample?.lastOCRAt == previousVisual?.lastOCRAt
+                ranOCR = captured.sample != nil && !reusedOCR
                 lastVisualSample = captured.sample
                 result = (captured.text, captured.status)
                 source = "windowOCR"
@@ -246,8 +281,11 @@ final class ActivityObserver {
             if result.text.isEmpty { result.status = "No meaningful text after local filtering" }
         }
         if result.text.isEmpty { contextFailures.insert(id) } else { contextFailures.remove(id) }
-        let changed = context.append(ContextSnapshot(bundleID: id, applicationName: name, windowTitle: title,
-                                       text: result.text, status: result.status, source: source))
+        let snapshot = ContextSnapshot(bundleID: id, applicationName: name, windowTitle: title,
+                                       text: result.text, status: result.status, source: source)
+        latestCapture = snapshot
+        let changed = context.append(snapshot)
+        performance.capture(seconds: ProcessInfo.processInfo.systemUptime - startedAt, ocr: ranOCR, reused: reusedOCR)
         captureDelay = ContextReduction.nextDelay(current: captureDelay, changed: changed)
         contextStatus = result.status
     }

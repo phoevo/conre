@@ -18,6 +18,7 @@ final class RawObservationLog {
     private(set) var events: [RawObservation] = []
     private(set) var warning: String?
     private let url: URL
+    @ObservationIgnored var onWrite: ((Int) -> Void)?
     private var writable = true
     private var activeID: UUID?
     private var lastSavedAt = Date.distantPast
@@ -39,7 +40,7 @@ final class RawObservationLog {
     func confirmActivity(at date: Date = Date()) {
         guard let activeID, let index = events.lastIndex(where: { $0.id == activeID }) else { return }
         events[index].observedUntil = max(events[index].timestamp, date)
-        if Date().timeIntervalSince(lastSavedAt) >= 10 { persist() }
+        if Date().timeIntervalSince(lastSavedAt) >= 30 { persist() }
     }
     func endSession(at date: Date = Date()) {
         guard activeID != nil else { return }
@@ -52,7 +53,9 @@ final class RawObservationLog {
         guard writable else { return }
         do {
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try JSONEncoder().encode(events).write(to: url, options: .atomic)
+            let data = try JSONEncoder().encode(events)
+            try data.write(to: url, options: .atomic)
+            onWrite?(data.count)
             lastSavedAt = Date()
             warning = nil
         } catch { warning = "Could not save raw observations: \(error.localizedDescription)" }
