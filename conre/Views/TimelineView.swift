@@ -12,7 +12,7 @@ struct TimelineView: View {
                 Button(action: observer.togglePause) {
                     Label(observer.isPaused ? "Resume" : "Pause", systemImage: observer.isPaused ? "play.fill" : "pause.fill")
                 }
-                .help("Changes logical observation state only. No monitoring is implemented.")
+                .help("Pause or resume approved-app observation.")
             }
             .padding(20)
 
@@ -59,9 +59,9 @@ struct TimelineView: View {
             }
             Divider()
             VStack(alignment: .leading, spacing: 6) {
-                Label(observer.isPaused ? "Observation paused · Demo mode" : "Observation ready · Demo mode",
+                Label(observer.status,
                       systemImage: observer.isPaused ? "pause.circle" : "circle.dotted")
-                Text("No applications or screen content are being monitored.")
+                Text("Raw app activity appears separately in App awareness.")
                 if let message = memory.persistenceMessage { Text(message).foregroundStyle(.orange) }
             }
             .font(.caption).foregroundStyle(.secondary).padding(16)

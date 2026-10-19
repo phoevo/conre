@@ -1,14 +1,53 @@
 import SwiftUI
+import AppKit
 
 @main
 struct conreApp: App {
-    @State private var memory = WorkingMemoryStore()
-    @State private var observer = ActivityObserver()
-
+    @NSApplicationDelegateAdaptor(ConreAppDelegate.self) private var delegate
     var body: some Scene {
-        WindowGroup("Conre") {
-            ContentView(memory: memory, observer: observer)
+        Settings { EmptyView() }
+    }
+}
+
+@MainActor
+final class ConreAppDelegate: NSObject, NSApplicationDelegate {
+    private lazy var memory = WorkingMemoryStore()
+    private lazy var observer = ActivityObserver()
+    private lazy var appearance = StatusAppearance()
+    private let floatingStatus = FloatingStatusController()
+    private var window: NSWindow?
+    private var migrationMessage: String?
+    override init() {
+        super.init()
+        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil,
+           NSClassFromString("XCTestCase") == nil {
+            migrationMessage = LegacyStorageMigration.prepare()
         }
-        .defaultSize(width: 420, height: 590)
+    }
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        guard ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil else { return }
+        observer.start()
+        floatingStatus.show(observer: observer, appearance: appearance) { [weak self] in self?.showMainWindow() }
+    }
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        showMainWindow()
+        return false
+    }
+    func applicationWillTerminate(_ notification: Notification) { observer.stop() }
+    private func showMainWindow() {
+        if window == nil {
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 500, height: 640),
+                                  styleMask: [.titled, .closable, .miniaturizable, .resizable],
+                                  backing: .buffered, defer: false)
+            window.title = "Conre"
+            window.isReleasedWhenClosed = false
+            window.contentView = NSHostingView(rootView: ContentView(memory: memory, observer: observer, appearance: appearance, migrationMessage: migrationMessage))
+            window.center()
+            self.window = window
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        window?.makeKeyAndOrderFront(nil)
     }
 }
