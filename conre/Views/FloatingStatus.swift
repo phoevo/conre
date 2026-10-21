@@ -1,10 +1,17 @@
 import SwiftUI
 import AppKit
 
+// A nonactivating panel must accept its first click while another app is active.
+private final class StatusHostingView<Content: View>: NSHostingView<Content> {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+}
+
 @MainActor
 final class FloatingStatusController {
     private var panel: NSPanel?
     private var screenToken: NSObjectProtocol?
+    private var outsideClickMonitor: Any?
+    private var localClickMonitor: Any?
     private var observer: ActivityObserver?
     private var appearance: StatusAppearance?
     private var assistant: WorkAssistant?
@@ -13,7 +20,10 @@ final class FloatingStatusController {
         guard panel == nil else { return }
         let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 250, height: 32),
                             styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
-        panel.level = .statusBar
+        // The recap shares the menu-bar strip with the pill. Keep its controls
+        // above the system menu-bar hit region rather than behind it.
+        panel.level = NSWindow.Level(rawValue: NSWindow.Level.statusBar.rawValue + 1)
+        panel.ignoresMouseEvents = false
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         panel.isOpaque = false; panel.backgroundColor = .clear; panel.hasShadow = false
         panel.hidesOnDeactivate = false
@@ -27,6 +37,30 @@ final class FloatingStatusController {
         panel.orderFrontRegardless()
         screenToken = NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor [weak self] in self?.position() }
+        }
+    }
+    private func updateClickMonitors(expanded: Bool) {
+        if !expanded {
+            if let outsideClickMonitor { NSEvent.removeMonitor(outsideClickMonitor) }
+            if let localClickMonitor { NSEvent.removeMonitor(localClickMonitor) }
+            outsideClickMonitor = nil; localClickMonitor = nil
+            return
+        }
+        let clicks: NSEvent.EventTypeMask = [.leftMouseDown, .rightMouseDown, .otherMouseDown]
+        if outsideClickMonitor == nil {
+            // Mouse-only observation while the reminder is visible. Do not record
+            // input or consume the click intended for another application.
+            outsideClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: clicks) { [weak self] _ in
+                Task { @MainActor [weak self] in self?.assistant?.dismissRecap() }
+            }
+        }
+        if localClickMonitor == nil {
+            localClickMonitor = NSEvent.addLocalMonitorForEvents(matching: clicks) { [weak self] event in
+                MainActor.assumeIsolated {
+                    if let self, event.window !== self.panel { self.assistant?.dismissRecap() }
+                }
+                return event
+            }
         }
     }
     private func position() {
@@ -45,6 +79,7 @@ final class FloatingStatusController {
                                     y: frame.maxY - (NSStatusBar.system.thickness + compactHeight) / 2)
         }
         let expanded = assistant.recap != nil
+        updateClickMonitors(expanded: expanded)
         // Keep the same top edge and notch-side edge throughout expansion.
         // The existing pill grows outward and down instead of moving below the menu bar.
         let notchSide = screen.auxiliaryTopRightArea != nil
@@ -55,11 +90,11 @@ final class FloatingStatusController {
                 with: NSSize(width: width - 48, height: .greatestFiniteMagnitude),
                 options: [.usesLineFragmentOrigin, .usesFontLeading],
                 attributes: [.font: NSFont.systemFont(ofSize: 12)]).height
-            height = min(180, max(124, ceil(textHeight) + 98))
+            height = min(200, max(138, ceil(textHeight) + 112))
         } else { height = compactHeight }
         let origin = NSPoint(x: notchSide ? compactOrigin.x : compactOrigin.x + 250 - width,
                              y: compactOrigin.y + compactHeight - height)
-        panel.contentView = NSHostingView(rootView: Group {
+        panel.contentView = StatusHostingView(rootView: Group {
             if let recap = assistant.recap {
                 ReturnRecapView(recap: recap, appearance: appearance, dismiss: assistant.dismissRecap) {
                     assistant.dismissRecap(); openApp()
@@ -118,7 +153,12 @@ struct ReturnRecapView: View {
                 Image(systemName: "arrow.uturn.backward").foregroundStyle(appearance.recapHeadingColor)
                 Text("Where you left off").font(.caption.weight(.semibold)).foregroundStyle(appearance.recapHeadingColor)
                 Spacer()
-                Button(action: dismiss) { Image(systemName: "xmark").font(.caption2).foregroundStyle(appearance.recapHeadingColor) }.buttonStyle(.plain).help("Dismiss recap")
+                Button(action: dismiss) {
+                    Image(systemName: "xmark").font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(appearance.recapHeadingColor)
+                        .frame(width: 28, height: 28)
+                        .contentShape(Rectangle())
+                }.buttonStyle(.plain).help("Dismiss recap").accessibilityLabel("Dismiss recap")
             }
             Button(action: openApp) {
                 Text(recap.text).font(.system(size: 12)).lineSpacing(2).multilineTextAlignment(.leading)
@@ -130,7 +170,10 @@ struct ReturnRecapView: View {
             Text("\(recap.isAI ? "Last summary" : "Last observed window") · \(recap.through.formatted(date: Calendar.current.isDateInToday(recap.through) ? .omitted : .abbreviated, time: .shortened))")
                 .font(.system(size: 10)).foregroundStyle(appearance.recapTimeColor)
         }.padding(16).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .background(RoundedRectangle(cornerRadius: 18).fill(appearance.recapBackgroundColor))
-            .overlay(RoundedRectangle(cornerRadius: 18).strokeBorder(appearance.recapRingColor, lineWidth: 1))
+            .background {
+                RoundedRectangle(cornerRadius: 18).fill(appearance.recapBackgroundColor)
+                    .contentShape(RoundedRectangle(cornerRadius: 18)).onTapGesture(perform: dismiss)
+            }
+            .overlay(RoundedRectangle(cornerRadius: 18).strokeBorder(appearance.recapRingColor, lineWidth: 1).allowsHitTesting(false))
     }
 }
